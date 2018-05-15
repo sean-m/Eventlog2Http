@@ -6,8 +6,11 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Diagnostics;
 using Mono.Options;
-using Newtonsoft.Json;
 using System.Threading;
+using System.Net.Http;
+using System.Net.Http.Headers;
+
+using Newtonsoft.Json;
 
 namespace EventLog2Http
 {
@@ -16,12 +19,14 @@ namespace EventLog2Http
         static void Main(string[] args) {
             List<string> logs = new List<string>();
             List<int> event_ids = new List<int>();
+            string uri_string = String.Empty;
             int verbose = 0;
             bool showHelp = false;
-
+            
             var p = new OptionSet()
                 .Add("v", "Verbosely print internal events.", v => ++verbose)
                 .Add("l|log=", "Specify log to collect from, may be used multiple times.", l => logs.Add(l))
+                .Add("u|uri=", "Specify where to forward event body via http post.", u => uri_string = u)
                 .Add("i|id=", "Comma separated list of event IDs to filter on", id => {
                     string[] elements = id.Split(',');
                     foreach (var i in elements) {
@@ -51,8 +56,8 @@ commas but no whitespace.
             foreach (var l in logs) Console.WriteLine("Log: {0}", l);
             foreach (var i in event_ids) Console.WriteLine("ID's: {0}", i);
 #endif
-
-            var watcher = new EventLogWatcher(logs, event_ids);
+           
+            var watcher = new EventLogWatcher(logs, event_ids, uri_string);
             Console.WriteLine($"Watcher status: {watcher.Status}");
             watcher.Start();
 
@@ -93,12 +98,24 @@ commas but no whitespace.
             List<EventLog> watching_logs = new List<EventLog>();
             BlockingCollection<EventLogEntry> events = new BlockingCollection<EventLogEntry>();
             CancellationTokenSource _tokenSource = new CancellationTokenSource();
-            Task _watcherTask;
 
-            public EventLogWatcher(List<string> Logs, List<int> Event_Ids) {
+            // TODO Refactor all of this out into some IHandler type thing,
+            // it shouldn't care about http or anything, just hand it a playload
+            // and cancellation token.
+            static HttpClient _client = new HttpClient();
+            static Uri _uri;
+            Task _watcherTask;
+            Action<Dictionary<string, dynamic>, CancellationToken> _handler = (input, token) => {
+                _client.PostAsJsonAsync(_uri?.AbsolutePath ?? "", input, token);
+            };
+
+            public EventLogWatcher(List<string> Logs, List<int> Event_Ids, string uri) {
                 logs.AddRange(Logs);
                 event_ids.AddRange(Event_Ids);
-                
+                _uri = new Uri(uri);
+                _client.BaseAddress = new Uri(String.Join("://", _uri.Scheme, _uri.Host));
+                _client.DefaultRequestHeaders.Accept.Add(
+                    new MediaTypeWithQualityHeaderValue("application/json"));
             }
 
             private BlockingCollection<EventLogEntry> Events { get => events; set => events = value; }
@@ -149,7 +166,8 @@ commas but no whitespace.
                         eventEntry.Add("MachineName", e.MachineName);
                         eventEntry.Add("UserName", e.UserName);
                         eventEntry.Add("Message", e.Message);
-                        Console.WriteLine(JsonConvert.SerializeObject(eventEntry));
+
+                        Task.Run(() => { _handler(eventEntry, Token); });
                     }
                 }
             }
