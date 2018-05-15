@@ -56,8 +56,9 @@ commas but no whitespace.
             foreach (var l in logs) Console.WriteLine("Log: {0}", l);
             foreach (var i in event_ids) Console.WriteLine("ID's: {0}", i);
 #endif
-           
-            var watcher = new EventLogWatcher(logs, event_ids, uri_string);
+            var handler = new ForwardWithHttp(uri_string);
+
+            var watcher = new EventLogWatcher(logs, event_ids, handler);
             Console.WriteLine($"Watcher status: {watcher.Status}");
             watcher.Start();
 
@@ -98,24 +99,13 @@ commas but no whitespace.
             List<EventLog> watching_logs = new List<EventLog>();
             BlockingCollection<EventLogEntry> events = new BlockingCollection<EventLogEntry>();
             CancellationTokenSource _tokenSource = new CancellationTokenSource();
-
-            // TODO Refactor all of this out into some IHandler type thing,
-            // it shouldn't care about http or anything, just hand it a playload
-            // and cancellation token.
-            static HttpClient _client = new HttpClient();
-            static Uri _uri;
             Task _watcherTask;
-            Action<Dictionary<string, dynamic>, CancellationToken> _handler = (input, token) => {
-                _client.PostAsJsonAsync(_uri?.AbsolutePath ?? "", input, token);
-            };
+            private IHandleEventEntry _handler;
 
-            public EventLogWatcher(List<string> Logs, List<int> Event_Ids, string uri) {
+            public EventLogWatcher(List<string> Logs, List<int> Event_Ids, IHandleEventEntry Handler) {
                 logs.AddRange(Logs);
                 event_ids.AddRange(Event_Ids);
-                _uri = new Uri(uri);
-                _client.BaseAddress = new Uri(String.Join("://", _uri.Scheme, _uri.Host));
-                _client.DefaultRequestHeaders.Accept.Add(
-                    new MediaTypeWithQualityHeaderValue("application/json"));
+                _handler = Handler;
             }
 
             private BlockingCollection<EventLogEntry> Events { get => events; set => events = value; }
@@ -167,7 +157,7 @@ commas but no whitespace.
                         eventEntry.Add("UserName", e.UserName);
                         eventEntry.Add("Message", e.Message);
 
-                        Task.Run(() => { _handler(eventEntry, Token); });
+                        _handler.HandleEntry(eventEntry, _tokenSource.Token);
                     }
                 }
             }
